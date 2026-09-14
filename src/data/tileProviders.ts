@@ -2,16 +2,6 @@ import { TileProvider } from '../types';
 
 export const TILE_PROVIDERS: TileProvider[] = [
   {
-    id: 'osm-standard',
-    name: 'OpenStreetMap (Leaflet Standard)',
-    category: 'street',
-    url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
-    maxZoom: 19,
-    description: 'Peta standar resmi OpenStreetMap bawaan Leaflet dengan detail jalan dan toponimi lengkap.',
-    isOsmCompliant: true,
-  },
-  {
     id: 'osm-hot',
     name: 'OSM Humanitarian (HOT)',
     category: 'street',
