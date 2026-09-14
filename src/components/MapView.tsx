@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
+// @ts-ignore
+import 'leaflet-rotate';
 import { 
   Layers, 
   Maximize2, 
@@ -13,7 +15,14 @@ import {
   Navigation,
   Loader2,
   ZoomIn,
-  ZoomOut
+  ZoomOut,
+  Compass,
+  RotateCcw,
+  RotateCw,
+  SlidersHorizontal,
+  Smartphone,
+  Info,
+  X
 } from 'lucide-react';
 import { Point, GeoJsonData, TileProvider } from '../types';
 import { TILE_PROVIDERS } from '../data/tileProviders';
@@ -55,6 +64,137 @@ export const MapView: React.FC<MapViewProps> = ({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [osmTileWarning, setOsmTileWarning] = useState<boolean>(false);
 
+  // Compass & Rotation States
+  const [bearing, setBearing] = useState<number>(0);
+  const [isCompassMode, setIsCompassMode] = useState<boolean>(false);
+  const [showRotationTools, setShowRotationTools] = useState<boolean>(false);
+  const [compassAlert, setCompassAlert] = useState<string | null>(null);
+
+  // Helper for Indonesian Cardinal Direction
+  const getCardinalDirection = (deg: number): { label: string; name: string } => {
+    const directions = [
+      { label: 'U', name: 'Utara' },
+      { label: 'TL', name: 'Timur Laut' },
+      { label: 'T', name: 'Timur' },
+      { label: 'TG', name: 'Tenggara' },
+      { label: 'S', name: 'Selatan' },
+      { label: 'BD', name: 'Barat Daya' },
+      { label: 'B', name: 'Barat' },
+      { label: 'BL', name: 'Barat Laut' },
+    ];
+    const idx = Math.round(((deg % 360) / 45)) % 8;
+    return directions[idx];
+  };
+
+  // Rotate map helper
+  const handleRotateBy = (deltaDeg: number) => {
+    setIsCompassMode(false);
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    const current = map.getBearing ? map.getBearing() : bearing;
+    const next = ((current + deltaDeg) % 360 + 360) % 360;
+    if (map.setBearing) {
+      map.setBearing(next);
+    }
+    setBearing(Math.round(next));
+  };
+
+  const handleSetExactBearing = (targetDeg: number) => {
+    setIsCompassMode(false);
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    const normalized = ((targetDeg % 360) + 360) % 360;
+    if (map.setBearing) {
+      map.setBearing(normalized);
+    }
+    setBearing(Math.round(normalized));
+  };
+
+  const handleResetNorth = () => {
+    setIsCompassMode(false);
+    handleSetExactBearing(0);
+  };
+
+  // Toggle Device Compass (Heading-Up Mode)
+  const toggleCompassMode = async () => {
+    if (isCompassMode) {
+      setIsCompassMode(false);
+      return;
+    }
+
+    setCompassAlert(null);
+
+    // iOS 13+ permission request
+    if (
+      typeof (window as any).DeviceOrientationEvent !== 'undefined' &&
+      typeof (window as any).DeviceOrientationEvent.requestPermission === 'function'
+    ) {
+      try {
+        const permission = await (window as any).DeviceOrientationEvent.requestPermission();
+        if (permission === 'granted') {
+          setIsCompassMode(true);
+        } else {
+          setCompassAlert('Izin sensor orientasi perangkat ditolak pada browser ini.');
+        }
+      } catch (err) {
+        console.error('Compass permission error:', err);
+        setCompassAlert('Gagal meminta izin sensor kompas pada perangkat.');
+      }
+    } else if ('DeviceOrientationEvent' in window) {
+      setIsCompassMode(true);
+    } else {
+      setCompassAlert('Browser ini tidak mendukung sensor kompas (DeviceOrientation).');
+    }
+  };
+
+  // Device orientation event listener
+  useEffect(() => {
+    if (!isCompassMode) return;
+    const map = mapInstanceRef.current;
+    if (!map) return;
+
+    let receivedData = false;
+
+    const handleOrientation = (e: DeviceOrientationEvent) => {
+      let heading: number | null = null;
+
+      // iOS Safari (webkitCompassHeading: 0 is Magnetic North, clockwise)
+      if ('webkitCompassHeading' in e && typeof (e as any).webkitCompassHeading === 'number') {
+        heading = (e as any).webkitCompassHeading;
+      } else if (e.alpha !== null && e.alpha !== undefined) {
+        // Standard Android DeviceOrientation
+        heading = (360 - e.alpha) % 360;
+      }
+
+      if (heading !== null && !isNaN(heading)) {
+        receivedData = true;
+        setCompassAlert(null);
+        const rounded = Math.round(heading);
+        if (map.setBearing) {
+          map.setBearing(rounded);
+        }
+        setBearing(rounded);
+      }
+    };
+
+    window.addEventListener('deviceorientationabsolute', handleOrientation as any, true);
+    window.addEventListener('deviceorientation', handleOrientation, true);
+
+    const timer = setTimeout(() => {
+      if (!receivedData) {
+        setCompassAlert(
+          'Sensor kompas fisik belum mendeteksi gerakan. Mode kompas aktif pada smartphone/tablet yang memiliki sensor giroskop & magnetometer. Di PC, putar peta menggunakan tombol atau Shift + Scroll Mouse.'
+        );
+      }
+    }, 2500);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('deviceorientationabsolute', handleOrientation as any, true);
+      window.removeEventListener('deviceorientation', handleOrientation, true);
+    };
+  }, [isCompassMode]);
+
   // Initialize Map
   useEffect(() => {
     if (!mapContainerRef.current || mapInstanceRef.current) return;
@@ -64,10 +204,21 @@ export const MapView: React.FC<MapViewProps> = ({
       zoom: zoom,
       zoomControl: false, // We create custom sleek controls
       attributionControl: true,
+      rotate: true,
+      bearing: 0,
+      touchRotate: true,
+      shiftKeyRotate: true,
+      rotateControl: false, // Use our sleek custom compass UI
     });
 
     // Custom attribution positioning
     map.attributionControl.setPosition('bottomright');
+
+    map.on('rotate', () => {
+      const current = map.getBearing ? map.getBearing() : 0;
+      const normalized = ((current % 360) + 360) % 360;
+      setBearing(Math.round(normalized));
+    });
 
     const markersGroup = L.layerGroup().addTo(map);
     markersLayerGroupRef.current = markersGroup;
@@ -456,6 +607,235 @@ export const MapView: React.FC<MapViewProps> = ({
         </button>
       </div>
 
+      {/* Compass Alert Notification (e.g. on devices without compass hardware) */}
+      {compassAlert && (
+        <div className="absolute top-16 left-4 right-4 z-30 max-w-md mx-auto p-3 bg-slate-900/95 text-white rounded-xl shadow-xl backdrop-blur-sm border border-slate-700 text-xs flex items-start justify-between gap-2 animate-in fade-in">
+          <div className="flex items-start gap-2">
+            <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <span className="text-[11px] leading-relaxed text-slate-200">{compassAlert}</span>
+          </div>
+          <button
+            onClick={() => setCompassAlert(null)}
+            className="text-slate-400 hover:text-white p-0.5 transition-colors"
+            title="Tutup"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Floating Compass Rose Widget & Rotation Controls on Upper-Right */}
+      <div className="absolute top-16 right-3 z-10 flex flex-col items-end gap-2">
+        {/* Compass Dial Card */}
+        <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-lg border border-slate-200/90 p-1.5 flex flex-col items-center gap-1.5 transition-all">
+          {/* Interactive Compass Dial */}
+          <button
+            onClick={handleResetNorth}
+            className="relative w-11 h-11 rounded-full bg-slate-50 hover:bg-slate-100 border border-slate-200/90 shadow-inner flex items-center justify-center transition-transform active:scale-95 group cursor-pointer"
+            title={`Orientasi: ${bearing}° - ${getCardinalDirection(bearing).name}. Klik untuk Reset kembali ke Utara murni (0°)`}
+          >
+            {/* Cardinal Markers on Rim */}
+            <span className="absolute top-0.5 text-[8px] font-black text-rose-600 leading-none select-none">U</span>
+            <span className="absolute bottom-0.5 text-[8px] font-bold text-slate-400 leading-none select-none">S</span>
+            <span className="absolute left-1 text-[8px] font-bold text-slate-400 leading-none select-none">B</span>
+            <span className="absolute right-1 text-[8px] font-bold text-slate-400 leading-none select-none">T</span>
+
+            {/* Compass Needle - Rotates so Red tip always points to Physical North */}
+            <div
+              className="w-full h-full flex items-center justify-center transition-transform duration-200 ease-out pointer-events-none"
+              style={{ transform: `rotate(${-bearing}deg)` }}
+            >
+              <svg viewBox="0 0 40 40" className="w-7 h-7 drop-shadow-sm">
+                {/* North Needle (Red) */}
+                <polygon points="20,6 23,20 20,18" fill="#ef4444" />
+                <polygon points="20,6 17,20 20,18" fill="#dc2626" />
+                {/* South Needle (Slate) */}
+                <polygon points="20,34 23,20 20,22" fill="#94a3b8" />
+                <polygon points="20,34 17,20 20,22" fill="#64748b" />
+                {/* Center Pivot */}
+                <circle cx="20" cy="20" r="2" fill="#0f172a" stroke="#ffffff" strokeWidth="1" />
+              </svg>
+            </div>
+          </button>
+
+          {/* Quick Degree / Reset Badge */}
+          <button
+            onClick={handleResetNorth}
+            className={`text-[10px] font-bold px-2 py-0.5 rounded-full transition-colors ${
+              bearing === 0
+                ? 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                : 'bg-rose-50 text-rose-700 hover:bg-rose-100 ring-1 ring-rose-200'
+            }`}
+            title="Klik untuk reset orientasi ke 0° Utara"
+          >
+            {bearing}° {bearing === 0 ? 'Utara' : 'Reset'}
+          </button>
+
+          {/* Toggle Rotation & Compass Tools */}
+          <button
+            onClick={() => setShowRotationTools(!showRotationTools)}
+            className={`p-1.5 rounded-xl text-xs transition-colors flex items-center justify-center ${
+              showRotationTools || isCompassMode
+                ? 'bg-emerald-100 text-emerald-800'
+                : 'text-slate-600 hover:bg-slate-100'
+            }`}
+            title="Panel Pengaturan Rotasi & Kompas"
+          >
+            <SlidersHorizontal className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {/* Expandable Rotation & Compass Tools Panel */}
+        {showRotationTools && (
+          <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl border border-slate-200/90 p-3 w-64 text-xs space-y-3 animate-in fade-in slide-in-from-top-2">
+            <div className="flex items-center justify-between pb-1.5 border-b border-slate-100">
+              <span className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                <Compass className="w-4 h-4 text-emerald-600" />
+                Rotasi & Kompas Peta
+              </span>
+              <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded-md">
+                {bearing}° {getCardinalDirection(bearing).label}
+              </span>
+            </div>
+
+            {/* Mode Kompas HP Otomatis */}
+            <div>
+              <button
+                onClick={toggleCompassMode}
+                className={`w-full py-2 px-3 rounded-xl flex items-center justify-between font-semibold text-xs transition-all ${
+                  isCompassMode
+                    ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30'
+                    : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Smartphone className="w-4 h-4" />
+                  <span>Mode Kompas HP</span>
+                </div>
+                {isCompassMode ? (
+                  <span className="flex items-center gap-1 text-[10px] font-bold bg-emerald-700/80 px-1.5 py-0.5 rounded">
+                    <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
+                    Aktif
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-slate-400 font-normal">Mati</span>
+                )}
+              </button>
+              <p className="text-[10px] text-slate-400 mt-1 leading-tight">
+                Peta otomatis berputar mengikuti sensor arah hadap petugas di lapangan.
+              </p>
+            </div>
+
+            {/* Quick Step Rotation Buttons */}
+            <div className="space-y-1.5 pt-1">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                Putar Bertahap
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  onClick={() => handleRotateBy(-45)}
+                  className="py-1.5 px-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg flex items-center justify-center gap-1 text-slate-700 font-medium active:scale-95 transition-all"
+                  title="Putar 45° berlawanan jarum jam"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+                  <span>-45°</span>
+                </button>
+                <button
+                  onClick={() => handleRotateBy(45)}
+                  className="py-1.5 px-2 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg flex items-center justify-center gap-1 text-slate-700 font-medium active:scale-95 transition-all"
+                  title="Putar 45° searah jarum jam"
+                >
+                  <RotateCw className="w-3.5 h-3.5 text-slate-500" />
+                  <span>+45°</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Quick Cardinal Direction Presets */}
+            <div className="space-y-1.5">
+              <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                Arah Mata Angin
+              </div>
+              <div className="grid grid-cols-4 gap-1 text-center font-bold text-[11px]">
+                <button
+                  onClick={() => handleSetExactBearing(0)}
+                  className={`py-1 rounded-md transition-colors ${
+                    bearing === 0
+                      ? 'bg-rose-500 text-white'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                  }`}
+                  title="Utara (0°)"
+                >
+                  U (0°)
+                </button>
+                <button
+                  onClick={() => handleSetExactBearing(90)}
+                  className={`py-1 rounded-md transition-colors ${
+                    bearing === 90
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                  }`}
+                  title="Timur (90°)"
+                >
+                  T (90°)
+                </button>
+                <button
+                  onClick={() => handleSetExactBearing(180)}
+                  className={`py-1 rounded-md transition-colors ${
+                    bearing === 180
+                      ? 'bg-amber-600 text-white'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                  }`}
+                  title="Selatan (180°)"
+                >
+                  S (180°)
+                </button>
+                <button
+                  onClick={() => handleSetExactBearing(270)}
+                  className={`py-1 rounded-md transition-colors ${
+                    bearing === 270
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700'
+                  }`}
+                  title="Barat (270°)"
+                >
+                  B (270°)
+                </button>
+              </div>
+            </div>
+
+            {/* Slider for Smooth Angle Adjustment */}
+            <div className="space-y-1">
+              <div className="flex justify-between text-[10px] text-slate-500">
+                <span>Sudut Bebas (Slider)</span>
+                <span className="font-mono font-bold text-slate-800">{bearing}°</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="359"
+                value={bearing}
+                onChange={(e) => handleSetExactBearing(Number(e.target.value))}
+                className="w-full accent-emerald-600 cursor-pointer"
+              />
+            </div>
+
+            {/* Touch & Keyboard Instruction Hint */}
+            <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-2 text-[10px] text-slate-500 space-y-1">
+              <div>
+                <strong className="text-slate-700">PC / Laptop:</strong> Tahan{' '}
+                <kbd className="px-1 py-0.5 bg-white border border-slate-300 rounded text-[9px] font-mono">Shift</kbd> +{' '}
+                <strong className="text-slate-700">Scroll Roda Mouse</strong> untuk memutar.
+              </div>
+              <div>
+                <strong className="text-slate-700">Layar Sentuh:</strong> Putar dengan{' '}
+                <strong className="text-slate-700">2 Jari (Pinch to Rotate)</strong>.
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
       {/* Floating Top-Left Status Badge */}
       <div className="absolute top-3 left-3 z-10 flex flex-col gap-1.5 pointer-events-auto">
         <div className="flex items-center gap-1.5 bg-white/95 backdrop-blur-md px-3 py-1.5 rounded-xl border border-slate-200/90 shadow-md text-xs font-semibold text-slate-800">
@@ -476,6 +856,20 @@ export const MapView: React.FC<MapViewProps> = ({
           <div className="bg-amber-500/90 text-white backdrop-blur-xs px-2.5 py-1 rounded-lg shadow-sm text-[11px] font-semibold flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-white" />
             <span>Batas SLS Aktif</span>
+          </div>
+        )}
+
+        {bearing !== 0 && (
+          <div className="bg-rose-50 border border-rose-200 text-rose-700 px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5 shadow-sm">
+            <Navigation className="w-3.5 h-3.5" style={{ transform: `rotate(${bearing}deg)` }} />
+            <span>Rotasi: {bearing}° {getCardinalDirection(bearing).label}</span>
+          </div>
+        )}
+
+        {isCompassMode && (
+          <div className="bg-emerald-600 text-white px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5 shadow-sm animate-pulse">
+            <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
+            <span>Kompas Lapangan Aktif ({bearing}°)</span>
           </div>
         )}
       </div>

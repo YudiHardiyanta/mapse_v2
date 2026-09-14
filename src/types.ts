@@ -66,3 +66,28 @@ export interface TileProvider {
   description: string;
   isOsmCompliant: boolean;
 }
+
+declare module 'leaflet' {
+  interface MapOptions {
+    rotate?: boolean;
+    bearing?: number;
+    rotateControl?: boolean | object;
+    touchRotate?: boolean;
+    shiftKeyRotate?: boolean;
+    compassBearing?: boolean;
+  }
+  interface Map {
+    setBearing?: (bearing: number) => this;
+    getBearing?: () => number;
+    touchRotate?: {
+      enable: () => void;
+      disable: () => void;
+      enabled: () => boolean;
+    };
+    compassBearing?: {
+      enable: () => void;
+      disable: () => void;
+      enabled: () => boolean;
+    };
+  }
+}
