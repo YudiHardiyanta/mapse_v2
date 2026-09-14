@@ -1,0 +1,6 @@
+{
+  "name": "Peta Sensus Ekonomi SLS Bali",
+  "description": "Visualisasi interaktif peta persebaran titik bangunan sensus ekonomi berbasis SLS di Provinsi Bali dengan peta terintegrasi dan kepatuhan penuh regulasi OpenStreetMap.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
